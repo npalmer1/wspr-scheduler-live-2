@@ -3,12 +3,20 @@
 #include "ui_liveform.h"
 
 #include "credentials.h"
+#include "loaderror.h"
 #include "livetablemodel.h"
 #include "msg.h"
 
+#include <memory>
+
+#include <QApplication>
 #include <QCheckBox>
+#include <QSqlDatabase>
 #include <QDialog>
+#include <QDir>
 #include <QDialogButtonBox>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QIntValidator>
@@ -18,6 +26,7 @@
 #include <QResizeEvent>
 #include <QSortFilterProxyModel>
 #include <QTimeZone>
+#include <QThread>
 #include <QTimer>
 
 #ifndef WSPRLIVE_VERSION
@@ -119,6 +128,7 @@ LiveForm::LiveForm(QWidget *parent)
     m_wait->hide();
     auto *centre = new CentreOnParent(m_wait);
     centre->centre();
+    m_loadError = new LoadErrorLabel("WSPR Scheduler Live", this);
 
     connect(ui->filterbutton, &QPushButton::clicked, this, [this] { applyFilter(); });
     connect(ui->Clearbutton, &QPushButton::clicked, this, [this] { showResults(); });
@@ -168,7 +178,13 @@ LiveForm::LiveForm(QWidget *parent)
     QTimer::singleShot(0, this, &LiveForm::start);
 }
 
-LiveForm::~LiveForm() = default;
+LiveForm::~LiveForm()
+{
+    if (m_indexThread) {   // closed while the index is being built: let MySQL finish it
+        m_indexThread->wait();
+        delete m_indexThread;
+    }
+}
 
 // C#: LiveForm_Load
 void LiveForm::start()
@@ -178,8 +194,19 @@ void LiveForm::start()
     m_started = true;
     readCallsigns();
     setHeader();
-    connectDatabase();
     m_tick->start();
+    if (!QSqlDatabase::isDriverAvailable("QMYSQL")) {
+        status("Qt's MySQL driver is missing", true);
+        Msg::ok(this,
+                "Qt's MySQL driver is missing, so the database can't be opened (the server itself may be fine).\n\n"
+                "Put qsqlmysql.dll (built for this Qt version and compiler) in:\n"
+                + QDir::toNativeSeparators(QCoreApplication::applicationDirPath() + "/sqldrivers")
+                + "\nand libmysql.dll, libcrypto-3-x64.dll, libssl-3-x64.dll in:\n"
+                + QDir::toNativeSeparators(QCoreApplication::applicationDirPath()),
+                "MySQL driver not found");
+    } else if (!connectDatabase()) {
+        m_loadError->showError(m_store.lastError(), true);   // C#: LiveForm_Shown - LoadError
+    }
     if (m_call.isEmpty()) {
         status("No callsign: set yours with Config", true);
         Msg::timed(this, "No callsign configured - see Config", "Callsign configuration", 3000);
@@ -196,7 +223,33 @@ bool LiveForm::connectDatabase()
     m_dbOk = m_store.open("127.0.0.1", "admin", m_dbPassword) && m_store.ensureTable();
     if (!m_dbOk)
         status("Database not available (" + m_store.lastError().left(120) + ") - trying again every minute", true);
+    else
+        buildCallIndex();
     return m_dbOk;
+}
+
+// once per run, in the background: the index for quick callsign searches (nothing to do once it's there)
+void LiveForm::buildCallIndex()
+{
+    if (m_indexThread)
+        return;
+    struct State { bool built = false, announced = false; QString err; };
+    const auto st = std::make_shared<State>();
+    m_indexThread = QThread::create([this, st] { st->built = m_store.buildCallIndexDetached(&st->err); });
+    connect(m_indexThread, &QThread::finished, this, [this, st] {
+        if (st->built && st->announced)
+            status("Callsign search index ready");
+        else if (!st->built && !st->err.isEmpty())
+            status("Couldn't make the callsign search index (" + st->err.left(120) + "): callsign searches may be slow", true);
+    });
+    m_indexThread->start();
+    // only say so when it takes a while (it's there already, or the table is small: nothing to see)
+    QTimer::singleShot(1500, this, [this, st] {
+        if (m_indexThread->isRunning()) {
+            st->announced = true;
+            status("Building the callsign search index (only once - a minute or two on a big table) ...");
+        }
+    });
 }
 
 // C#: getUserandPassword reads "db_call:" (WSPR Scheduler's call); getCall reads ~/LiveCall and uses
@@ -228,7 +281,10 @@ void LiveForm::showWait(const QString &text)
     m_wait->setText(text);
     m_wait->show();
     m_wait->raise();
+    m_wait->repaint();   // database reads block: paint the panel before they start
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
+
 
 void LiveForm::hideWait()
 {
@@ -247,7 +303,8 @@ int LiveForm::periodMinutes() const
 // next minute after one failed. Also reconnects the database if it wasn't there.
 void LiveForm::tick()
 {
-    if (!m_dbOk && connectDatabase()) {
+    if (!m_dbOk && QSqlDatabase::isDriverAvailable("QMYSQL") && connectDatabase()) {
+        m_loadError->hide();   // the database is there now
         status("Database connected");
         if (!m_filtered && m_ownCall)
             showResults();
@@ -270,8 +327,7 @@ void LiveForm::fetch(int minutes, bool manual)
         return;
     }
     m_manualFetch = manual;
-    if (manual)
-        showWait("Retrieving live data ... please wait");
+    showWait("Retrieving live data ... please wait");
     status(QString("Asking wspr.live for reports of %1 in the last %2 minutes ...").arg(m_call).arg(minutes));
     m_fetch->fetch(m_call, minutes, kLiveLimit);
 }
@@ -319,15 +375,41 @@ void LiveForm::fetched(bool ok, const QVector<Live::Spot> &spots, const QString 
         showResults();
 }
 
+QVector<Live::Spot> LiveForm::readInBackground(const std::function<QVector<Live::Spot>(QString *)> &job, QString *err)
+{
+    QVector<Live::Spot> rows;
+    m_querying = true;
+    QEventLoop loop;
+    QThread *t = QThread::create([&] { rows = job(err); });
+    connect(t, &QThread::finished, &loop, &QEventLoop::quit);
+    t->start();
+    loop.exec(QEventLoop::ExcludeUserInputEvents);   // paints (the wait panel) and timers; clicks wait till after
+    t->wait();
+    delete t;
+    m_querying = false;
+    return rows;
+}
+
 // C#: show_results / find_received
 void LiveForm::showResults()
 {
+    if (m_querying) {   // e.g. new reports arrived while a search was running: do it afterwards
+        m_refreshPending = true;
+        return;
+    }
+    m_refreshPending = false;
     m_filtered = false;
     if (!m_dbOk && !connectDatabase())
         return;
-    const auto rows = m_store.latest(kMaxRows);
-    if (!m_store.lastError().isEmpty()) {
-        status("Error retrieving data: " + m_store.lastError().left(150), true);
+    showWait("Retrieving local data ... please wait");   // C#: updateResults
+    QString err;
+    const auto rows = readInBackground([this](QString *e) { return m_store.latestDetached(kMaxRows, e); }, &err);
+    if (m_fetch->busy())
+        m_wait->setText("Retrieving live data ... please wait");
+    else
+        hideWait();
+    if (!err.isEmpty()) {
+        status("Error retrieving data: " + err.left(150), true);
         return;
     }
     m_model->setRows(rows);
@@ -337,6 +419,8 @@ void LiveForm::showResults()
 // C#: filter_results / find_selected
 void LiveForm::applyFilter(const QString &version)
 {
+    if (m_querying)
+        return;   // one search at a time
     if (!m_dbOk && !connectDatabase())
         return;
     Live::Filter f;
@@ -357,15 +441,23 @@ void LiveForm::applyFilter(const QString &version)
     };
     f.minKm = dist(ui->DFromtextBox->text());
     f.maxKm = dist(ui->DTotextBox->text());
-    const auto rows = m_store.select(f, kMaxRows);
-    if (!m_store.lastError().isEmpty()) {
+    showWait("Searching ... please wait");   // C#: filterbutton_Click / version search
+    QString err;
+    QElapsedTimer took;
+    took.start();
+    const auto rows = readInBackground([this, f](QString *e) { return m_store.selectDetached(f, kMaxRows, e); }, &err);
+    const QString secs = QString::number(took.elapsed() / 1000.0, 'f', 1);
+    hideWait();
+    if (!err.isEmpty()) {
         Msg::timed(this, "Error retrieving data - please try again", "Database error", 2000);
+        if (m_refreshPending)
+            showResults();
         return;
     }
     m_filtered = true;
     m_model->setRows(rows);
     ui->dataGridView1->sortByColumn(LiveTableModel::Date, Qt::DescendingOrder);
-    status(QString("Filter: %1 reports%2").arg(rows.size()).arg(version.isEmpty() ? QString() : " from " + version)
+    status(QString("Filter: %1 reports%2 in %3 s").arg(rows.size()).arg(version.isEmpty() ? QString() : " from " + version, secs)
            + " (Clear to show the latest again)");
 }
 

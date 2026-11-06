@@ -13,6 +13,7 @@
 #include <QTimeZone>
 #include <QTimer>
 #include <QSet>
+#include <QTcpSocket>
 #include <QUuid>
 #include <cmath>
 
@@ -260,6 +261,19 @@ bool Store::open(const QString &host, const QString &user, const QString &passwo
 {
     close();
     m_error.clear();
+    m_host = host;
+    m_user = user;
+    m_password = password;
+    {   // quick check first: a MySQL that isn't there would otherwise hold the window for the whole
+        // connect timeout at every retry (on Windows even a refused connection takes about 2 s)
+        QTcpSocket probe;
+        probe.connectToHost(host.isEmpty() || host == "localhost" ? QString("127.0.0.1") : host, 3306);
+        if (!probe.waitForConnected(300)) {
+            m_error = QString("Can't connect to MySQL server on '%1' (port 3306 not answering)").arg(host);
+            return false;
+        }
+        probe.abort();
+    }
     {
         QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", m_name);
         db.setHostName(host);
@@ -387,23 +401,22 @@ bool Store::save(const QVector<Spot> &spots, int *added)
     return true;
 }
 
-QVector<Spot> Store::run(const QString &sql, const QVariantList &args)
+static QVector<Spot> runOn(QSqlDatabase db, const QString &sql, const QVariantList &args, QString *err)
 {
     QVector<Spot> out;
-    QSqlDatabase db = QSqlDatabase::database(m_name, false);
     QSqlQuery q(db);
     q.setForwardOnly(true);
     if (!q.prepare(sql)) {
-        m_error = q.lastError().text();
+        *err = q.lastError().text();
         return out;
     }
     for (int i = 0; i < args.size(); ++i)
         q.bindValue(i, args[i]);
     if (!q.exec()) {
-        m_error = q.lastError().text();
+        *err = q.lastError().text();
         return out;
     }
-    m_error.clear();
+    err->clear();
     while (q.next()) {
         Spot s;
         s.id = q.value(0).toLongLong();
@@ -439,15 +452,31 @@ static QString selectColumns()
     return c;
 }
 
-QVector<Spot> Store::latest(int maxRows)
+static QVector<Spot> latestOn(QSqlDatabase db, int maxRows, QString *err)
 {
-    return run(QString("SELECT %1 FROM reported ORDER BY time DESC LIMIT %2").arg(selectColumns()).arg(qMax(1, maxRows)), {});
+    return runOn(db, QString("SELECT %1 FROM reported ORDER BY time DESC LIMIT %2").arg(selectColumns()).arg(qMax(1, maxRows)),
+                 {}, err);
 }
 
-QVector<Spot> Store::select(const Filter &f, int maxRows)
+static bool hasIndex(QSqlDatabase db, const QString &name)
+{
+    QSqlQuery q(db);
+    q.prepare("SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() "
+              "AND table_name = 'reported' AND index_name = ? LIMIT 1");
+    q.bindValue(0, name);
+    return q.exec() && q.next();
+}
+
+// "WHERE rx_sign LIKE 'VK%' ORDER BY time DESC LIMIT n" on a big table: walking the time index from the
+// newest end reads n * total / matches rows; reading the matches through the rx_sign index reads every
+// one of them (113,000 VK spots out of 9 million, each from a different place on the disk: 35 s with
+// XAMPP's small cache). With the (rx_sign, time, band, distance) index, the newest n are found and
+// sorted in the index alone, and only those n rows are then read.
+static QVector<Spot> selectOn(QSqlDatabase db, const Filter &f, int maxRows, QString *err)
 {
     QStringList where;
     QVariantList args;
+    bool useCallIndex = false;
     if (!f.version.isEmpty()) {
         where << "version = ?";
         args << f.version;
@@ -464,7 +493,9 @@ QVector<Spot> Store::select(const Filter &f, int maxRows)
             where << "rx_sign LIKE ?";
             QString p = f.callPrefix;
             p.remove('*').replace("%", "").replace("_", "\\_");
-            args << p + "%";
+            const QString like = p + "%";
+            args << like;
+            useCallIndex = hasIndex(db, Store::kCallIndex);
         }
         if (f.minKm >= 0) {
             where << "distance >= ?";
@@ -475,11 +506,83 @@ QVector<Spot> Store::select(const Filter &f, int maxRows)
             args << f.maxKm;
         }
     }
-    QString sql = "SELECT " + selectColumns() + " FROM reported";
-    if (!where.isEmpty())
-        sql += " WHERE " + where.join(" AND ");
-    sql += QString(" ORDER BY time DESC LIMIT %1").arg(qMax(1, maxRows));
-    return run(sql, args);
+    const QString limit = QString(" ORDER BY time DESC LIMIT %1").arg(qMax(1, maxRows));
+    QString sql;
+    if (useCallIndex)   // every condition here is in the index: the inner query never reads the table
+        sql = "SELECT " + selectColumns() + " FROM reported JOIN (SELECT id AS kid FROM reported FORCE INDEX (`"
+              + Store::kCallIndex + "`) WHERE " + where.join(" AND ") + limit + ") k ON id = k.kid" + limit;
+    else {
+        sql = "SELECT " + selectColumns() + " FROM reported";
+        if (!where.isEmpty())
+            sql += " WHERE " + where.join(" AND ");
+        sql += limit;
+    }
+    return runOn(db, sql, args, err);
+}
+
+QVector<Spot> Store::run(const QString &sql, const QVariantList &args)
+{
+    return runOn(QSqlDatabase::database(m_name, false), sql, args, &m_error);
+}
+
+QVector<Spot> Store::latest(int maxRows)
+{
+    return latestOn(QSqlDatabase::database(m_name, false), maxRows, &m_error);
+}
+
+QVector<Spot> Store::select(const Filter &f, int maxRows)
+{
+    return selectOn(QSqlDatabase::database(m_name, false), f, maxRows, &m_error);
+}
+
+// a connection for this call only, in whichever thread calls it
+static QVector<Spot> detached(const QString &host, const QString &user, const QString &password, QString *err,
+                              const std::function<QVector<Spot>(QSqlDatabase)> &job)
+{
+    QVector<Spot> out;
+    const QString name = "live_q_" + QUuid::createUuid().toString(QUuid::Id128);
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", name);
+        db.setHostName(host);
+        db.setUserName(user);
+        db.setPassword(password);
+        db.setConnectOptions("MYSQL_OPT_CONNECT_TIMEOUT=5");
+        db.setDatabaseName("wspr_rx");
+        if (db.open())
+            out = job(db);
+        else
+            *err = db.lastError().text();
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(name);
+    return out;
+}
+
+QVector<Spot> Store::latestDetached(int maxRows, QString *err) const
+{
+    return detached(m_host, m_user, m_password, err, [&](QSqlDatabase db) { return latestOn(db, maxRows, err); });
+}
+
+bool Store::buildCallIndexDetached(QString *err) const
+{
+    bool built = false;
+    detached(m_host, m_user, m_password, err, [&](QSqlDatabase db) {
+        if (hasIndex(db, kCallIndex))
+            return QVector<Spot>();
+        QSqlQuery q(db);
+        // online: saving new spots and searching carry on while it is built
+        const QString add = QString("ALTER TABLE reported ADD INDEX `%1` (rx_sign, time, band, distance)").arg(kCallIndex);
+        built = q.exec(add + ", ALGORITHM=INPLACE, LOCK=NONE") || q.exec(add);
+        if (!built)
+            *err = q.lastError().text();
+        return QVector<Spot>();
+    });
+    return built;
+}
+
+QVector<Spot> Store::selectDetached(const Filter &f, int maxRows, QString *err) const
+{
+    return detached(m_host, m_user, m_password, err, [&](QSqlDatabase db) { return selectOn(db, f, maxRows, err); });
 }
 
 int Store::count()

@@ -8,6 +8,7 @@
 #include <QString>
 #include <QUrl>
 #include <QVector>
+#include <functional>
 #include <optional>
 
 class QNetworkAccessManager;
@@ -115,6 +116,14 @@ public:
     bool save(const QVector<Spot> &spots, int *added = nullptr);
     QVector<Spot> latest(int maxRows);                       // C#: find_received
     QVector<Spot> select(const Filter &f, int maxRows);      // C#: find_selected
+    // the same two, but safe to call from another thread: they use a connection of their own (opened
+    // and closed for the call), so a slow search doesn't hold up the window; *err = "" when it worked
+    QVector<Spot> latestDetached(int maxRows, QString *err) const;
+    QVector<Spot> selectDetached(const Filter &f, int maxRows, QString *err) const;
+    // the index that makes callsign searches quick (rx_sign, time, band, distance): built once, which on
+    // a big table takes a minute or so - so call this from another thread. true: it was built just now
+    bool buildCallIndexDetached(QString *err) const;
+    static constexpr const char *kCallIndex = "idx_reported_call";
     int count();
     QString lastError() const { return m_error; }
     QString connectionName() const { return m_name; }
@@ -122,6 +131,7 @@ public:
 private:
     QVector<Spot> run(const QString &sql, const QVariantList &args);
     QString m_name;
+    QString m_host, m_user, m_password;   // for the detached connections
     QString m_error;
 };
 

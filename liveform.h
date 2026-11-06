@@ -10,13 +10,16 @@
 //  - no pop-up every few minutes when updates are disabled or nothing new was found - the status line says so;
 //  - an automatic update doesn't replace a filtered grid (C# did, hence "Disable updates");
 //  - the filter values are passed to MySQL as parameters, not pasted into the SQL.
+#include <functional>
 #include "livecore.h"
 
 #include <QWidget>
+class QThread;
 #include <memory>
 
 namespace Ui { class LiveForm; }
 class LiveTableModel;
+class LoadErrorLabel;
 class QSortFilterProxyModel;
 class QLabel;
 class QTimer;
@@ -46,10 +49,12 @@ private:
     void setHeader();            // C#: set_header
     void fetch(int minutes, bool manual);   // C#: get_results
     void fetched(bool ok, const QVector<Live::Spot> &spots, const QString &error);
+    // runs job in a thread of its own (on its own connection) while the window keeps painting
+    QVector<Live::Spot> readInBackground(const std::function<QVector<Live::Spot>(QString *)> &job, QString *err);
     void showResults();          // C#: show_results - the latest reports from the database
     void applyFilter(const QString &version = QString());   // C#: filter_results / find_selected
     int periodMinutes() const;   // C#: findPeriod
-    void showWait(const QString &text);
+    void showWait(const QString &text);   // the "please wait" panel, painted straight away
     void hideWait();
     void status(const QString &text, bool error = false);
     void updateDistanceLimits();
@@ -68,6 +73,7 @@ private:
     QTimer *m_tick;              // C#: timer2, once a minute
     QTimer *m_lockout;           // C#: timer1 - "Update now" can't be pressed again for a minute
     QLabel *m_wait = nullptr;    // C#: panel1 / Waitlabel
+    LoadErrorLabel *m_loadError = nullptr;   // C#: LoadError - shown while the database can't be opened
     QString m_home;              // where DBcredential and LiveCall are (tests)
     QString m_call;              // C#: Callsign
     QString m_originalCall;      // C#: originalcall - this station
@@ -78,6 +84,10 @@ private:
     bool m_filtered = false;     // the grid shows a filter: automatic updates leave it alone
     bool m_retrySoon = false;    // last update failed: try again at the next minute
     bool m_manualFetch = false;
+    QThread *m_indexThread = nullptr;   // building the callsign search index (once)
+    void buildCallIndex();
+    bool m_querying = false;     // a database read is running in the background
+    bool m_refreshPending = false;   // showResults() was asked for meanwhile
     bool m_started = false;
     int m_ticks = 0;             // C#: startCount
 };
