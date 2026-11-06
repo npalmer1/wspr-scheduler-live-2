@@ -1,0 +1,20 @@
+WSPR Scheduler Live - what else this PC needs
+=============================================
+
+WSPR Scheduler Live shows who has heard your WSPR transmissions, from wspr.live, and saves the reports
+in the WSPR Scheduler database (wspr_rx.reported) for WSPR Scheduler Map's TX map.
+
+It needs:
+
+1. MySQL or MariaDB with the WSPR Scheduler databases - the same ones WSPR Scheduler uses. If WSPR
+   Scheduler already runs on this PC, nothing else is needed. Otherwise see "The WSPR Scheduler Database
+   Configuration" at https://sourceforge.net/projects/wspr-scheduler/files/
+   The database password and your callsign are read from DBcredential in your user folder (written by
+   WSPR Scheduler). Without one, set your callsign with Config.
+
+2. An internet connection (reports come from db1.wspr.live).
+
+Don't run it together with the C# WSPR Scheduler Live: both would fetch the same reports.
+
+Source code and bug reports: https://github.com/npalmer1/wspr-scheduler-live
+WSPR Scheduler Live is free software under the GNU General Public License v3.
