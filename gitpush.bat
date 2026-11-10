@@ -1,6 +1,6 @@
 @echo off
 rem WSPR Scheduler Live 2: commit everything and push it to GitHub
-cd /d C:\WSPR-Live-2
+cd /d D:\WSPR-Live-2
 set "msg="
 set /p msg=Commit message (Enter for "Update"): 
 if "%msg%"=="" set "msg=Update"
