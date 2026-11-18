@@ -33,6 +33,17 @@ cmake --build build
 Tests: configure with `-DWSPRLIVE_TESTS=ON`. The database tests need a scratch MySQL, never the real one.
 The Windows installer for SourceForge is made with `installer\make_release.bat` (see installer\README.md).
 
+## Linux
+
+On Ubuntu, Debian or Raspberry Pi OS one script installs everything and builds the program:
+
+```
+wget https://raw.githubusercontent.com/npalmer1/wspr-scheduler-live-2/main/linux/install.sh
+bash install.sh
+```
+
+Run it again to update. See [linux/README.md](linux/README.md).
+
 ## Licence
 
 GNU General Public License v3.0. See [LICENSE](LICENSE).

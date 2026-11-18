@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Network)
 
@@ -17,7 +18,7 @@ target_link_libraries(livecore PUBLIC Qt6::Core Qt6::Sql Qt6::Network)
 target_include_directories(livecore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(WSPRLIVE_SOURCES liveform.h liveform.cpp liveform.ui livetablemodel.h livetablemodel.cpp msg.h msg.cpp
-    loaderror.h loaderror.cpp)
+    loaderror.h loaderror.cpp wsprlive.qrc)
 
 if(WIN32)   # icon and version details for WsprLive.exe (Explorer, taskbar, installer)
     set(RC_ICON "${CMAKE_CURRENT_SOURCE_DIR}/wsprlive.ico")
@@ -58,6 +59,14 @@ if(WIN32)
         message(WARNING "installer/thirdparty/sqldrivers/qsqlmysql.dll not found - copy the MySQL driver "
                         "(sqldrivers/qsqlmysql.dll, libmysql.dll ...) next to the program yourself")
     endif()
+endif()
+
+# Linux: "cmake --install" (linux/install.sh does it): the program, a menu entry and its icon
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+    install(TARGETS WsprLive RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES linux/wspr-scheduler-live-2.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES linux/wspr-scheduler-live-2.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps)
 endif()
 
 option(WSPRLIVE_TESTS "Build the tests (the database ones need a scratch MySQL, never the real one)" OFF)

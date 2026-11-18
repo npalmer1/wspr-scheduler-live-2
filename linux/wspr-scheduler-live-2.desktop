@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=WSPR Scheduler Live 2
+GenericName=WSPR reports from wspr.live
+Comment=Reports of this station's WSPR transmissions from wspr.live, saved for WSPR Scheduler Map
+Exec=WsprLive
+Icon=wspr-scheduler-live-2
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=WSPR;ham;radio;wspr.live;
