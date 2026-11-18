@@ -61,7 +61,7 @@ if(WIN32)
     endif()
 endif()
 
-# Linux: "cmake --install" (linux/install.sh does it): the program, a menu entry and its icon
+# Linux: "cmake --install" (linux/live_install.sh does it): the program, a menu entry and its icon
 if(UNIX AND NOT APPLE)
     include(GNUInstallDirs)
     install(TARGETS WsprLive RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

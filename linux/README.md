@@ -8,12 +8,12 @@ Trixie) should work the same.
 1. Download the install script and run it, as your normal user (it asks for your password itself):
 
    ```
-   wget https://raw.githubusercontent.com/npalmer1/wspr-scheduler-live-2/main/linux/install.sh
-   bash install.sh
+   wget https://raw.githubusercontent.com/npalmer1/wspr-scheduler-live-2/main/linux/live_install.sh
+   bash live_install.sh
    ```
 
    It installs git if needed, downloads WSPR Scheduler Live 2 into `~/wspr-scheduler-live-2`, and installs it.
-   (If you already have a copy cloned from GitHub, `bash linux/install.sh` in it does the same.)
+   (If you already have a copy cloned from GitHub, `bash linux/live_install.sh` in it does the same.)
 
 2. Start **WSPR Scheduler Live 2** from the applications menu (or type `WsprLive`).
 
@@ -44,7 +44,7 @@ is), `--no-mysql` (the databases are on another PC), `--uninstall`.
 Run the script again:
 
 ```
-bash ~/wspr-scheduler-live-2/linux/install.sh
+bash ~/wspr-scheduler-live-2/linux/live_install.sh
 ```
 
 It pulls the latest version from GitHub, rebuilds and reinstalls the program; the databases and settings
@@ -54,7 +54,7 @@ are kept. If you have changed files in `~/wspr-scheduler-live-2` yourself, it st
 ## Uninstall
 
 ```
-bash ~/wspr-scheduler-live-2/linux/install.sh --uninstall
+bash ~/wspr-scheduler-live-2/linux/live_install.sh --uninstall
 ```
 
 removes the program and its menu entry. The source folder, the databases and your settings stay.

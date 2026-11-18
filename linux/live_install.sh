@@ -2,9 +2,9 @@
 # WSPR Scheduler Live 2 - install or update on Ubuntu / Debian / Raspberry Pi OS.
 #
 # Just this script is enough - download it and run it:
-#   wget https://raw.githubusercontent.com/npalmer1/wspr-scheduler-live-2/main/linux/install.sh
-#   bash install.sh
-# (or, in a folder already cloned from GitHub:  bash linux/install.sh)
+#   wget https://raw.githubusercontent.com/npalmer1/wspr-scheduler-live-2/main/linux/live_install.sh
+#   bash live_install.sh
+# (or, in a folder already cloned from GitHub:  bash linux/live_install.sh)
 #
 # It asks for your password (sudo) where it needs it, and:
 #   0. installs git if it isn't there, and gets the source: clones it into ~/wspr-scheduler-live-2, or if that's
@@ -167,7 +167,7 @@ if [ -z "${WSPR_LIVE_BOOTSTRAPPED:-}" ] && [ "$UPDATE" = 1 ]; then
     export WSPR_LIVE_BOOTSTRAPPED=1
     NEXT=(--dir "$DEST" --no-update)
     [ "$WITH_MYSQL" = 0 ] && NEXT+=(--no-mysql)
-    exec bash "$DEST/linux/install.sh" "${NEXT[@]}"
+    exec bash "$DEST/linux/live_install.sh" "${NEXT[@]}"
 fi
 
 SRC="$DEST"
